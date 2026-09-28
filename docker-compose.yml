@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  # ----------------------------------------------------
+  # 1. Apache Kafka & Zookeeper (Message Streaming Platform)
+  # ----------------------------------------------------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: datalake-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: datalake-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  # ----------------------------------------------------
+  # 2. PostgreSQL (Relational Metadata & Index Store)
+  # ----------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: datalake-postgres
+    environment:
+      POSTGRES_DB: datalake_db
+      POSTGRES_USER: datalake_user
+      POSTGRES_PASSWORD: datalake_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # ----------------------------------------------------
+  # 3. MinIO (S3 Compatible Distributed Object Storage)
+  # ----------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2024-01-18T22-51-28Z
+    container_name: datalake-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  # ----------------------------------------------------
+  # 4. PySpark Engine (Distributed Compute Engine)
+  # ----------------------------------------------------
+  spark-master:
+    image: bitnami/spark:3.5.0
+    container_name: datalake-spark-master
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+
+  spark-worker:
+    image: bitnami/spark:3.5.0
+    container_name: datalake-spark-worker
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=2
+
+  # ----------------------------------------------------
+  # 5. Django Backend API (Python Application Server)
+  # ----------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+    container_name: datalake-backend
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - USE_POSTGRES=True
+      - POSTGRES_HOST=postgres
+      - AWS_S3_ENDPOINT_URL=http://minio:9000
+      - SPARK_MASTER_URL=spark://spark-master:7077
+    depends_on:
+      - kafka
+      - postgres
+      - minio
+
+volumes:
+  postgres_data:
+  minio_data:
